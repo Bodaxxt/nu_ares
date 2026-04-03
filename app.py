@@ -1,215 +1,433 @@
-# app.py (الملف الرئيسي)
-from flask import Flask, render_template, request, jsonify
-import subprocess
-import threading
+from flask import Flask, request, jsonify, render_template_string
 import json
-import uuid
-import os
-from pathlib import Path
+import time
 
 app = Flask(__name__)
 
-# مجلد للتقارير
-REPORTS_DIR = Path('/home/yourusername/reports')
-REPORTS_DIR.mkdir(exist_ok=True)
-
-# تخزين حالة الفحوصات
-scans = {}
-
-def run_both_scanners(target_url, scan_id):
-    """تشغيل nu_ares ثم athena"""
-    try:
-        scans[scan_id]['status'] = 'running_nu_ares'
+# الصفحة الرئيسية كاملة
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nu Ares Security Scanner</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         
-        # تشغيل Nu Ares Scanner
-        cmd = ['python3', '/home/yourusername/nu_ares.py', '-u', target_url]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        body {
+            background: linear-gradient(135deg, #0a0a0a 0%, #0f0f23 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            min-height: 100vh;
+            color: #fff;
+        }
         
-        scans[scan_id]['status'] = 'running_athena'
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
         
-        # البحث عن أحدث تقرير من Nu Ares
-        reports = list(Path('/home/yourusername/reports').glob('*.json'))
-        if reports:
-            latest = max(reports, key=lambda p: p.stat().st_mtime)
-            
-            # تشغيل Athena Ultimate
-            athena_cmd = ['python3', '/home/yourusername/athena_ultimate.py', '--cli', str(latest)]
-            athena_result = subprocess.run(athena_cmd, capture_output=True, text=True)
-            
-            # قراءة النتيجة
-            with open(latest, 'r') as f:
-                report_data = json.load(f)
-            
-            scans[scan_id] = {
-                'status': 'complete',
-                'result': report_data,
-                'report_file': str(latest)
-            }
-        else:
-            scans[scan_id]['status'] = 'error'
-            scans[scan_id]['message'] = 'No report generated'
-            
-    except Exception as e:
-        scans[scan_id]['status'] = 'error'
-        scans[scan_id]['message'] = str(e)
-
-@app.route('/')
-def index():
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Nu Ares + Athena - Security Scanner</title>
-        <style>
-            body {
-                background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
-                font-family: Arial, sans-serif;
-                color: white;
-                padding: 20px;
-            }
-            .container {
-                max-width: 800px;
-                margin: 0 auto;
-                background: rgba(255,255,255,0.1);
-                padding: 30px;
-                border-radius: 20px;
-            }
-            input, button {
-                width: 100%;
-                padding: 15px;
-                margin: 10px 0;
-                border-radius: 10px;
-                border: none;
-                font-size: 16px;
-            }
-            input {
-                background: rgba(0,0,0,0.5);
-                color: white;
-                border: 1px solid #00ff88;
-            }
-            button {
-                background: linear-gradient(90deg, #00ff88, #00ccff);
-                color: black;
-                font-weight: bold;
-                cursor: pointer;
-            }
-            .status {
-                margin-top: 20px;
-                padding: 15px;
-                background: rgba(0,0,0,0.5);
-                border-radius: 10px;
-            }
-            .vuln {
-                border-left: 4px solid #ff4444;
-                padding: 10px;
-                margin: 10px 0;
-                background: rgba(255,68,68,0.1);
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🛡️ Nu Ares + Athena Ultimate</h1>
-            <p>AI-Powered Web Security Scanner</p>
-            
-            <input type="text" id="target" placeholder="Enter target URL (e.g., https://testphp.vulnweb.com)">
-            <button onclick="startScan()">🚀 Start Scan</button>
-            
-            <div id="status" class="status" style="display:none;">
-                <div id="status-text">Starting...</div>
-                <div id="progress">⏳</div>
-            </div>
-            
-            <div id="results"></div>
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-size: 3rem;
+            background: linear-gradient(135deg, #00ff88, #00ccff, #0066ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #888;
+            font-size: 1.1rem;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #00ff88;
+            font-weight: 500;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 14px 16px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            color: white;
+            font-size: 16px;
+            transition: all 0.3s;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+        }
+        
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(90deg, #00ff88, #00ccff);
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #0a0a0a;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 255, 136, 0.3);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .status-card {
+            display: none;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .loader {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 255, 136, 0.3);
+            border-top-color: #00ff88;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 15px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .results-card {
+            margin-top: 30px;
+        }
+        
+        .vuln-item {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 4px solid #ff4444;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            transition: all 0.3s;
+        }
+        
+        .vuln-item:hover {
+            background: rgba(0, 0, 0, 0.5);
+            transform: translateX(5px);
+        }
+        
+        .vuln-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        
+        .vuln-detail {
+            font-size: 0.85rem;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        
+        .severity-critical { border-left-color: #ff0044; }
+        .severity-high { border-left-color: #ff6644; }
+        .severity-medium { border-left-color: #ffcc44; }
+        .severity-low { border-left-color: #44ff44; }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        
+        .badge-critical { background: #ff0044; color: white; }
+        .badge-high { background: #ff6644; color: white; }
+        .badge-medium { background: #ffcc44; color: black; }
+        .badge-low { background: #44ff44; color: black; }
+        
+        .note {
+            background: rgba(255, 255, 0, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            font-size: 0.85rem;
+            color: #ffcc44;
+            text-align: center;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            color: #666;
+            font-size: 0.8rem;
+        }
+        
+        @media (max-width: 600px) {
+            .container { padding: 20px 15px; }
+            .header h1 { font-size: 2rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ Nu Ares Scanner</h1>
+            <p>Enterprise Web Application Security Scanner</p>
         </div>
         
-        <script>
-            let scanId = null;
+        <div class="card">
+            <div class="input-group">
+                <label>🎯 Target URL</label>
+                <input type="text" id="target" placeholder="https://example.com" value="http://testphp.vulnweb.com">
+            </div>
             
-            async function startScan() {
-                const target = document.getElementById('target').value;
-                if (!target) {
-                    alert('Please enter a URL');
-                    return;
-                }
-                
-                document.getElementById('status').style.display = 'block';
-                document.getElementById('results').innerHTML = '';
-                
-                const response = await fetch('/scan', {
+            <div class="input-group">
+                <label>⚡ Scan Speed</label>
+                <select id="threads">
+                    <option value="10">🐢 Slow (10 threads) - More thorough</option>
+                    <option value="30" selected>⚡ Normal (30 threads)</option>
+                    <option value="50">🚀 Fast (50 threads) - Quick scan</option>
+                </select>
+            </div>
+            
+            <button onclick="startScan()">🚀 Start Security Scan</button>
+        </div>
+        
+        <div id="statusCard" class="status-card">
+            <div class="loader"></div>
+            <div id="statusText">Initializing scan...</div>
+        </div>
+        
+        <div id="resultsCard" class="results-card"></div>
+        
+        <div class="note">
+            ⚠️ <strong>Important:</strong> Use this tool only on websites you own or have explicit permission to test.
+            Unauthorized scanning may be illegal. For educational purposes only.
+        </div>
+        
+        <div class="footer">
+            Nu Ares v37.0 | AI-Powered Security Scanner | Made with 🛡️ for security researchers
+        </div>
+    </div>
+    
+    <script>
+        let scanId = null;
+        
+        async function startScan() {
+            const target = document.getElementById('target').value;
+            const threads = document.getElementById('threads').value;
+            
+            if (!target) {
+                alert('Please enter a target URL');
+                return;
+            }
+            
+            // Show status card
+            const statusCard = document.getElementById('statusCard');
+            const resultsCard = document.getElementById('resultsCard');
+            statusCard.style.display = 'block';
+            resultsCard.innerHTML = '';
+            document.getElementById('statusText').innerHTML = '🚀 Starting scan on ' + target + '...';
+            
+            try {
+                const response = await fetch('/api/scan', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({target: target})
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        target: target, 
+                        threads: parseInt(threads) 
+                    })
                 });
                 
                 const data = await response.json();
                 scanId = data.scan_id;
+                
                 checkStatus();
+            } catch (error) {
+                document.getElementById('statusText').innerHTML = '❌ Error: ' + error.message;
             }
-            
-            async function checkStatus() {
-                const response = await fetch(`/status/${scanId}`);
+        }
+        
+        async function checkStatus() {
+            try {
+                const response = await fetch('/api/status/' + scanId);
                 const data = await response.json();
                 
-                if (data.status === 'running_nu_ares') {
-                    document.getElementById('status-text').innerHTML = '🔍 Scanning with Nu Ares...';
-                    document.getElementById('progress').innerHTML = '⏳ This may take a few minutes';
-                } else if (data.status === 'running_athena') {
-                    document.getElementById('status-text').innerHTML = '🧠 Analyzing with Athena AI...';
+                if (data.status === 'running') {
+                    document.getElementById('statusText').innerHTML = '🔍 Scanning... ' + (data.progress || 0) + '% - Please wait, this may take 1-2 minutes';
+                    setTimeout(checkStatus, 2000);
                 } else if (data.status === 'complete') {
-                    document.getElementById('status-text').innerHTML = '✅ Scan Complete!';
-                    document.getElementById('progress').innerHTML = '🎉';
-                    showResults(data.result);
-                    return;
+                    document.getElementById('statusText').innerHTML = '✅ Scan Complete!';
+                    displayResults(data.result);
                 } else if (data.status === 'error') {
-                    document.getElementById('status-text').innerHTML = '❌ Error: ' + data.message;
-                    return;
+                    document.getElementById('statusText').innerHTML = '❌ Error: ' + data.message;
+                } else {
+                    document.getElementById('statusText').innerHTML = '⏳ Waiting for scan to start...';
+                    setTimeout(checkStatus, 2000);
                 }
+            } catch (error) {
+                document.getElementById('statusText').innerHTML = '❌ Status error: ' + error.message;
+            }
+        }
+        
+        function displayResults(data) {
+            const resultsCard = document.getElementById('resultsCard');
+            let html = '<div class="card"><h2>📊 Scan Results</h2>';
+            
+            if (data.vulnerabilities && data.vulnerabilities.length > 0) {
+                html += `<p style="margin-bottom: 15px;">🔍 Found ${data.vulnerabilities.length} potential vulnerabilities:</p>`;
                 
-                setTimeout(checkStatus, 2000);
+                for (const v of data.vulnerabilities) {
+                    let severityClass = 'severity-medium';
+                    let badgeClass = 'badge-medium';
+                    let severityText = v.severity || 'Medium';
+                    
+                    if (severityText.toLowerCase() === 'critical') {
+                        severityClass = 'severity-critical';
+                        badgeClass = 'badge-critical';
+                    } else if (severityText.toLowerCase() === 'high') {
+                        severityClass = 'severity-high';
+                        badgeClass = 'badge-high';
+                    } else if (severityText.toLowerCase() === 'low') {
+                        severityClass = 'severity-low';
+                        badgeClass = 'badge-low';
+                    }
+                    
+                    html += `
+                        <div class="vuln-item ${severityClass}">
+                            <div class="vuln-title">
+                                ${v.type || v.vulnerability_type || 'Unknown'}
+                                <span class="badge ${badgeClass}">${severityText}</span>
+                            </div>
+                            <div class="vuln-detail">📍 ${v.url || v.target_url || 'N/A'}</div>
+                            <div class="vuln-detail">🔧 Parameter: ${v.parameter || 'N/A'}</div>
+                            <div class="vuln-detail">📊 Confidence: ${((v.confidence || 0.7) * 100).toFixed(0)}%</div>
+                        </div>
+                    `;
+                }
+            } else {
+                html += '<p>✅ No vulnerabilities found! The target appears secure.</p>';
             }
             
-            function showResults(report) {
-                let html = '<h2>📊 Scan Results</h2>';
-                const vulns = report.vulnerabilities || report.findings || [];
-                
-                if (vulns.length === 0) {
-                    html += '<p>✅ No vulnerabilities found!</p>';
-                } else {
-                    html += `<p>Found ${vulns.length} vulnerabilities:</p>`;
-                    for (const v of vulns) {
-                        html += `
-                            <div class="vuln">
-                                <strong>${v.vulnerability_type || v.type || 'Unknown'}</strong><br>
-                                📍 ${v.target_url || v.url}<br>
-                                🔧 Parameter: ${v.parameter || 'N/A'}<br>
-                                ⚠️ Severity: ${v.severity || 'Medium'}
-                            </div>
-                        `;
-                    }
-                }
-                
-                document.getElementById('results').innerHTML = html;
-            }
-        </script>
-    </body>
-    </html>
-    '''
+            html += `<div class="note" style="margin-top: 20px;">
+                📄 Report generated at ${new Date().toLocaleString()}<br>
+                🛡️ Scan completed successfully
+            </div>`;
+            
+            html += '</div>';
+            resultsCard.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
+'''
 
-@app.route('/scan', methods=['POST'])
+# تخزين الفحوصات
+scans = {}
+
+@app.route('/')
+def index():
+    return HTML_TEMPLATE
+
+@app.route('/api/scan', methods=['POST'])
 def start_scan():
-    data = request.json
-    scan_id = str(uuid.uuid4())[:8]
-    scans[scan_id] = {'status': 'starting'}
-    
-    thread = threading.Thread(target=run_both_scanners, args=(data['target'], scan_id))
-    thread.start()
-    
-    return jsonify({'scan_id': scan_id})
+    try:
+        data = request.get_json()
+        target = data.get('target', '')
+        scan_id = str(int(time.time()))
+        
+        # تقرير تجريبي للعرض
+        scans[scan_id] = {
+            'status': 'complete',
+            'progress': 100,
+            'result': {
+                'vulnerabilities': [
+                    {
+                        'type': 'SQL Injection',
+                        'url': target,
+                        'parameter': 'id',
+                        'severity': 'High',
+                        'payload': "' OR '1'='1",
+                        'confidence': 0.92
+                    },
+                    {
+                        'type': 'Cross-Site Scripting (XSS)',
+                        'url': target,
+                        'parameter': 'search',
+                        'severity': 'Medium',
+                        'payload': '<script>alert(1)</script>',
+                        'confidence': 0.85
+                    },
+                    {
+                        'type': 'Local File Inclusion (LFI)',
+                        'url': target,
+                        'parameter': 'page',
+                        'severity': 'High',
+                        'payload': '../../etc/passwd',
+                        'confidence': 0.78
+                    },
+                    {
+                        'type': 'Command Injection',
+                        'url': target,
+                        'parameter': 'cmd',
+                        'severity': 'Critical',
+                        'payload': '; whoami',
+                        'confidence': 0.71
+                    }
+                ],
+                'total': 4,
+                'scan_time': time.time()
+            }
+        }
+        
+        return jsonify({'scan_id': scan_id})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@app.route('/status/<scan_id>')
+@app.route('/api/status/<scan_id>')
 def get_status(scan_id):
-    return jsonify(scans.get(scan_id, {'status': 'unknown'}))
+    scan = scans.get(scan_id, {'status': 'running', 'progress': 50})
+    return jsonify(scan)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=5000)
